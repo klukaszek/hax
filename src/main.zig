@@ -1,4 +1,4 @@
-// Simple example of using Zig with WebGPU and mach-glfw to render a triangle
+// Simple example of using hax to render a triangle
 
 const std = @import("std");
 const wgpu = @import("wgpu");
