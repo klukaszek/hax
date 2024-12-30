@@ -1,21 +1,18 @@
 // Simple example of using hax to render a triangle
-
 const std = @import("std");
 const wgpu = @import("wgpu");
 const glfw = @import("mach-glfw");
 const hax = @import("hax.zig");
-const os = @import("builtin").os;
 
 // Main function for the example
 pub fn main() !void {
     var ctx: hax.Context = undefined;
-    try ctx.initialize(@constCast(&hax.ContextDescriptor{ .title = "wgpu-native-zig + mach-glfw: triangle" }));
+
+    // Initialize our hax context. This will create a window and a swapchain, and initialize the WebGPU API.
+    ctx = try hax.Context.initialize(@constCast(&hax.ContextDescriptor{ .title = "hax: triangle" }));
     defer ctx.release();
-    const device = ctx.device;
 
-    const swapchain_format = wgpu.TextureFormat.bgra8_unorm_srgb;
-
-    const shader_module = device.createShaderModule(&wgpu.shaderModuleWGSLDescriptor(.{
+    const shader_module = ctx.device.createShaderModule(&wgpu.shaderModuleWGSLDescriptor(.{
         .code = @embedFile("./triangle.wgsl"),
     })).?;
     defer shader_module.release();
@@ -23,7 +20,7 @@ pub fn main() !void {
     // Define colour target for swapchain texture
     const color_targets = &[_]wgpu.ColorTargetState{
         wgpu.ColorTargetState{
-            .format = swapchain_format,
+            .format = wgpu.TextureFormat.bgra8_unorm_srgb,
             .blend = &wgpu.BlendState{
                 .color = wgpu.BlendComponent{
                     .operation = .add,
@@ -41,7 +38,7 @@ pub fn main() !void {
     };
 
     // Create the render pipeline
-    const pipeline = device.createRenderPipeline(&wgpu.RenderPipelineDescriptor{
+    const pipeline = ctx.device.createRenderPipeline(&wgpu.RenderPipelineDescriptor{
         .vertex = wgpu.VertexState{
             .module = shader_module,
             .entry_point = "vertexMain",
@@ -56,33 +53,22 @@ pub fn main() !void {
     while (!ctx.window.shouldClose()) {
         glfw.pollEvents();
 
-        // Acquire the next swapchain texture
-        var surface_texture: wgpu.SurfaceTexture = undefined;
-        ctx.swapchain.surface.getCurrentTexture(&surface_texture);
-        defer surface_texture.texture.release();
-        const stat = wgpu.GetCurrentTextureStatus;
-        switch (surface_texture.status) {
-            stat.success => {},
-            stat.timeout, stat.outdated, stat.lost => {
-                ctx.reconfigure_surface();
-            },
-            else => {
-                std.debug.print("Surface texture error: {}\n", .{surface_texture.status});
-            },
-        }
+        // Acquire the next frame from the context's swapchain
+        const frame: *const wgpu.SurfaceTexture = &hax.Swapchain.acquire_next_frame(&ctx);
+        defer frame.texture.release();
 
         // Create texture view
-        const texture_view: *wgpu.TextureView = surface_texture.texture.createView(null).?;
-        defer texture_view.release();
+        const frame_view: *wgpu.TextureView = frame.texture.createView(null).?;
+        defer frame_view.release();
         // Create WebGPU Command Encoder
-        const encoder: *wgpu.CommandEncoder = device.createCommandEncoder(&.{
-            .label = "Zig WebGPU Command Encoder",
+        const encoder: *wgpu.CommandEncoder = ctx.device.createCommandEncoder(&.{
+            .label = "hax wgpu Command Encoder",
         }).?;
 
         // Create render pass
-        const render_pass: *wgpu.RenderPassEncoder = encoder.beginRenderPass(&wgpu.RenderPassDescriptor{ .label = "Zig WebGPU Render Pass", .color_attachment_count = 1, .color_attachments = &[_]wgpu.ColorAttachment{
+        const render_pass: *wgpu.RenderPassEncoder = encoder.beginRenderPass(&wgpu.RenderPassDescriptor{ .label = "hax wgpu Render Pass", .color_attachment_count = 1, .color_attachments = &[_]wgpu.ColorAttachment{
             wgpu.ColorAttachment{
-                .view = texture_view,
+                .view = frame_view,
                 .resolve_target = null,
                 .loap_op = .clear,
                 .store_op = .store,
@@ -96,7 +82,7 @@ pub fn main() !void {
         render_pass.end();
 
         // Create a command buffer
-        const command_buffer: *wgpu.CommandBuffer = encoder.finish(&wgpu.CommandBufferDescriptor{ .label = "Zig WGPU Command Buffer" }).?;
+        const command_buffer: *wgpu.CommandBuffer = encoder.finish(&wgpu.CommandBufferDescriptor{ .label = "hax wgpu Command Buffer" }).?;
         defer command_buffer.release();
 
         // Submit the command buffer

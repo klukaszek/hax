@@ -22,7 +22,112 @@ pub const ProgramDescriptor = struct {
     cleanup: fn () void = undefined,
 };
 
-// hax WebGPU Context struct
+// -- Swapchain / Surface Namespace --
+
+pub const Swapchain = struct {
+    surface: *wgpu.Surface = undefined,
+    config: *wgpu.SurfaceConfiguration = undefined,
+
+    // Configure our WebGPU surface for the target platform. Mac OS X is not supported yet, I need to write a C++ wrapper.
+    pub fn configure_for_platform(ctx: *Context) void {
+        // Check GLFW platform and create the appropriate surface for WebGPU
+        switch (glfw.getPlatform()) {
+            .x11 => {
+                const backend = glfw.Native(.{ .x11 = true });
+                ctx.swapchain.surface = ctx.instance.createSurface(&wgpu.SurfaceDescriptor{
+                    .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromXlibWindow{
+                        .chain = wgpu.ChainedStruct{
+                            .s_type = wgpu.SType.surface_descriptor_from_xlib_window,
+                        },
+                        .window = backend.getX11Window(ctx.window),
+                        .display = backend.getX11Display(),
+                    }),
+                    .label = "Zig WebGPU X11 Surface",
+                }).?;
+                std.debug.print("X11 surface created\n", .{});
+            },
+            .wayland => {
+                const backend = glfw.Native(.{ .wayland = true });
+                ctx.swapchain.surface = ctx.instance.createSurface(&wgpu.SurfaceDescriptor{
+                    .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromWaylandSurface{
+                        .chain = wgpu.ChainedStruct{
+                            .s_type = wgpu.SType.surface_descriptor_from_wayland_surface,
+                        },
+                        .surface = backend.getWaylandWindow(ctx.window),
+                        .display = backend.getWaylandDisplay(),
+                    }),
+                    .label = "Zig WebGPU Wayland Surface",
+                }).?;
+                std.debug.print("Wayland surface created\n", .{});
+            },
+            .cocoa => {
+                // const cocoa_window = glfw.Native(.{ .cocoa = true }).getCocoaWindow(window);
+                // TODO: Implement a C++ wrapper around the NSView to get the Metal layer
+            },
+            .win32 => {
+                // The compiler will only check for windows.h if the target is windows
+                if (builtin.os.tag == .windows) {
+                    std.debug.print("Windows detected\n", .{});
+                    const windows = @cImport({
+                        @cInclude("windows.h");
+                    });
+                    const hinstance = windows.GetModuleHandleA(null) orelse {
+                        std.log.err("Failed to get module handle\n", .{});
+                        return glfw.ErrorCode.PlatformUnavailable;
+                    };
+                    ctx.swapchain.surface = ctx.instance.createSurface(&wgpu.SurfaceDescriptor{
+                        .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromHwnd{
+                            .chain = wgpu.ChainedStruct{
+                                .s_type = wgpu.SType.surface_descriptor_from_hwnd,
+                            },
+                            .hinstance = hinstance,
+                            .hwnd = glfw.Native(.{ .win32 = true }).getWin32Window(ctx.window),
+                        }),
+                        .label = "Zig WebGPU Win32 Surface",
+                    }).?;
+                } else {
+                    std.log.err("Windows platform not supported\n", .{});
+                }
+            },
+            else => {
+                std.log.err("Unsupported platform\n", .{});
+            },
+        }
+    }
+
+    // Reconfigure our surface when needed.
+    pub fn reconfigure(ctx: *Context) void {
+        const dimensions = ctx.window.getSize();
+        ctx.swapchain.config.width = dimensions.width;
+        ctx.swapchain.config.height = dimensions.height;
+        ctx.swapchain.surface.configure(ctx.swapchain.config);
+    }
+
+    pub fn acquire_next_frame(ctx: *Context) wgpu.SurfaceTexture {
+        // Acquire the next swapchain texture
+        var surface_texture: wgpu.SurfaceTexture = undefined;
+        ctx.swapchain.surface.getCurrentTexture(&surface_texture);
+        const stat = wgpu.GetCurrentTextureStatus;
+        switch (surface_texture.status) {
+            stat.success => {},
+            stat.timeout, stat.outdated, stat.lost => {
+                Swapchain.reconfigure(ctx);
+            },
+            else => {
+                std.debug.print("Surface texture error: {}\n", .{surface_texture.status});
+            },
+        }
+        return surface_texture;
+    }
+};
+
+// --- Context Namespace ---
+
+pub const HaxError = error{
+    NoAdapter,
+    NoDevice,
+};
+
 pub const Context = struct {
     window: glfw.Window = undefined,
     instance: *wgpu.Instance = undefined,
@@ -30,25 +135,23 @@ pub const Context = struct {
     device: *wgpu.Device = undefined,
     queue: *wgpu.Queue = undefined,
     desc: *ContextDescriptor = undefined,
-    swapchain: struct {
-        surface: *wgpu.Surface = undefined,
-        config: *wgpu.SurfaceConfiguration = undefined,
-    },
+    swapchain: Swapchain = {},
 
     // Initialize the context
-    pub fn initialize(self: *Context, desc: *ContextDescriptor) !void {
+    pub fn initialize(desc: *ContextDescriptor) HaxError!Context {
         if (!glfw.init(.{})) {
             std.log.err("Failed to initialize GLFW: {?s}\n", .{glfw.getErrorString()});
             std.process.exit(1);
         }
 
+        var self: Context = undefined;
         self.desc = desc;
 
         // Create our WebGPU instance
         var instance = wgpu.Instance.create(null).?;
         self.instance = instance;
 
-        // Create a GLFW window with no API self
+        // Create a GLFW window with no API context
         const hints: glfw.Window.Hints = .{
             .client_api = .no_api,
         };
@@ -59,10 +162,10 @@ pub const Context = struct {
         self.window = window;
 
         // Set the self struct as the user pointer of the window
-        glfw.Window.setUserPointer(window, self);
+        glfw.Window.setUserPointer(window, &self);
         glfw.Window.setKeyCallback(window, glfw_key_callback);
 
-        self.configure_surface_for_platform();
+        Swapchain.configure_for_platform(&self);
 
         // Request a high-performance adapter now that we have a surface
         const adapter_request = instance.requestAdapterSync(&wgpu.RequestAdapterOptions{
@@ -108,86 +211,12 @@ pub const Context = struct {
         };
         self.swapchain.config = @constCast(&config);
         self.swapchain.surface.configure(self.swapchain.config);
+
+        return self;
     }
 
-    // --- Surface / Swapchain Helpers ---
-
-    // Configure our WebGPU surface for the target platform. Mac OS X is not supported yet, I need to write a C++ wrapper.
-    pub fn configure_surface_for_platform(self: *Context) void {
-        // Check GLFW platform and create the appropriate surface for WebGPU
-        switch (glfw.getPlatform()) {
-            .x11 => {
-                const backend = glfw.Native(.{ .x11 = true });
-                self.swapchain.surface = self.instance.createSurface(&wgpu.SurfaceDescriptor{
-                    .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromXlibWindow{
-                        .chain = wgpu.ChainedStruct{
-                            .s_type = wgpu.SType.surface_descriptor_from_xlib_window,
-                        },
-                        .window = backend.getX11Window(self.window),
-                        .display = backend.getX11Display(),
-                    }),
-                    .label = "Zig WebGPU X11 Surface",
-                }).?;
-                std.debug.print("X11 surface created\n", .{});
-            },
-            .wayland => {
-                const backend = glfw.Native(.{ .wayland = true });
-                self.swapchain.surface = self.instance.createSurface(&wgpu.SurfaceDescriptor{
-                    .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromWaylandSurface{
-                        .chain = wgpu.ChainedStruct{
-                            .s_type = wgpu.SType.surface_descriptor_from_wayland_surface,
-                        },
-                        .surface = backend.getWaylandWindow(self.window),
-                        .display = backend.getWaylandDisplay(),
-                    }),
-                    .label = "Zig WebGPU Wayland Surface",
-                }).?;
-                std.debug.print("Wayland surface created\n", .{});
-            },
-            .cocoa => {
-                // const cocoa_window = glfw.Native(.{ .cocoa = true }).getCocoaWindow(window);
-                // TODO: Implement a C++ wrapper around the NSView to get the Metal layer
-            },
-            .win32 => {
-                // The compiler will only check for windows.h if the target is windows
-                if (builtin.os.tag == .windows) {
-                    std.debug.print("Windows detected\n", .{});
-                    const windows = @cImport({
-                        @cInclude("windows.h");
-                    });
-                    const hinstance = windows.GetModuleHandleA(null) orelse {
-                        std.log.err("Failed to get module handle\n", .{});
-                        return glfw.ErrorCode.PlatformUnavailable;
-                    };
-                    self.swapchain.surface = self.instance.createSurface(&wgpu.SurfaceDescriptor{
-                        .next_in_chain = @ptrCast(&wgpu.SurfaceDescriptorFromHwnd{
-                            .chain = wgpu.ChainedStruct{
-                                .s_type = wgpu.SType.surface_descriptor_from_hwnd,
-                            },
-                            .hinstance = hinstance,
-                            .hwnd = glfw.Native(.{ .win32 = true }).getWin32Window(self.window),
-                        }),
-                        .label = "Zig WebGPU Win32 Surface",
-                    }).?;
-                } else {
-                    std.log.err("Windows platform not supported\n", .{});
-                }
-            },
-            else => {
-                std.log.err("Unsupported platform\n", .{});
-            },
-        }
-    }
-
-    // Reconfigure our surface when needed.
-    pub fn reconfigure_surface(self: *Context) void {
-        const dimensions = self.window.getSize();
-        self.swapchain.config.width = dimensions.width;
-        self.swapchain.config.height = dimensions.height;
-        self.swapchain.surface.configure(self.swapchain.config);
-    }
-
-    // --- Cleanup ---
+    // free context resources
+    // this kills the render loop
     pub fn release(self: *Context) void {
         if (self.swapchain.surface != undefined) {
             self.swapchain.surface.release();
@@ -207,6 +236,8 @@ pub const Context = struct {
         self.window.destroy();
     }
 };
+
+// --- Default Callbacks ---
 
 // Simple key callback to print a global report when the 'r' key is pressed
 fn glfw_key_callback(window: glfw.Window, key: glfw.Key, scancode: i32, action: glfw.Action, mods: glfw.Mods) void {
