@@ -10,7 +10,7 @@ var ctx: hax.Context = undefined;
 // Main function for the example
 pub fn main() !void {
     // Initialize our hax context. This will create a window and a swapchain, and initialize the WebGPU API.
-    ctx = try hax.Context.initialize(&hax.ContextDescriptor{ .title = "hax: triangle", .width = 800, .height = 600, .msaa_samples = 4 });
+    ctx = try hax.Context.initialize(&hax.ContextDescriptor{ .title = "hax: triangle", .width = 1920, .height = 1080, .msaa_samples = 4 });
     defer ctx.release();
     // Set the swapchain's parent to the context
     ctx.swapchain.parent = @constCast(&ctx);
@@ -54,7 +54,9 @@ pub fn main() !void {
         // Acquire the next frame from the context's swapchain
         const frame_view = ctx.swapchain.acquireRenderView();
         const resolve_target = ctx.swapchain.acquireResolveView();
-        defer resolve_target.?.release();
+        // if (resolve_target != null) {
+        //     defer resolve_target.?.release();
+        // }
 
         // Create WebGPU Command Encoder
         const encoder: *wgpu.CommandEncoder = ctx.device.createCommandEncoder(&.{
