@@ -36,29 +36,41 @@ pub fn build(b: *std.Build) void {
     // Leave optimization level at default, but you can change it
     const optimize = b.standardOptimizeOption(.{});
 
-    // Define the executable
-    const exe = b.addExecutable(.{
-        .name = "sdfs",
+    // Get the wgpu-native dependency
+    const wgpu_native_dep = b.dependency("wgpu-native-zig", .{});
+    const wgpu = wgpu_native_dep.module("wgpu");
+
+    // Get the mach-glfw dependency
+    const mach_glfw_dep = b.dependency("mach-glfw", .{});
+    const glfw = mach_glfw_dep.module("mach-glfw");
+
+    // -- Create Hax module --
+
+    const hax = b.addModule("hax", .{
+        .root_source_file = b.path("src/hax.zig"),
+        .optimize = optimize,
         .target = target,
-        .root_source_file = b.path("src/main.zig"),
+    });
+    hax.addImport("wgpu", wgpu);
+    hax.addImport("mach-glfw", glfw);
+
+    // -- Create the triangle example executable --
+
+    const triangle = b.addExecutable(.{
+        .name = "triangle-example",
+        .target = target,
+        .root_source_file = b.path("examples/triangle/main.zig"),
         .optimize = optimize,
     });
-
-    // Add the wgpu-native dependency
-    const wgpu_native_dep = b.dependency("wgpu-native-zig", .{});
-    exe.root_module.addImport("wgpu", wgpu_native_dep.module("wgpu"));
-
-    // Add the mach-glfw dependency
-    const mach_glfw_dep = b.dependency("mach-glfw", .{});
-    exe.root_module.addImport("mach-glfw", mach_glfw_dep.module("mach-glfw"));
-
-    // Create an executable artifact
-    const target_output = b.addInstallArtifact(exe, .{});
-    b.getInstallStep().dependOn(&target_output.step);
+    triangle.root_module.addImport("hax", hax);
+    triangle.root_module.addImport("wgpu", wgpu);
+    triangle.root_module.addImport("mach-glfw", glfw);
 
     // Assign a run artifact to the executable
     // We can now call `zig build run` to run the executable
-    const run_cmd = b.addRunArtifact(exe);
-    const run_cmd_step = b.step("run", "Run the executable");
-    run_cmd_step.dependOn(&run_cmd.step);
+    const triangle_cmd = b.addRunArtifact(triangle);
+    const triangle_step = b.step("run", "Run the executable");
+    triangle_step.dependOn(&triangle_cmd.step);
+
+    b.installArtifact(triangle);
 }
